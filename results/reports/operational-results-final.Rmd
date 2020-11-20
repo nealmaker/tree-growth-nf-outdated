@@ -1,0 +1,277 @@
+---
+title: "Tree Growth Submodels for the US Northern Forest"
+subtitle: "Results for Operational Versions"
+author: "Neal Maker & John Foppert"
+date: "`r lubridate::today()`"
+output: 
+  pdf_document:
+    fig_caption: TRUE
+    df_print: kable
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, warning = FALSE, message = FALSE)
+
+library("here")
+library("tidyverse")
+library("caret")
+library("kableExtra")
+library("extrafont")
+library("pROC")
+
+load("C:/Users/Neal/projects/big-rdas/dbh-growth-model-op.rda")
+load("C:/Users/Neal/projects/big-rdas/ht-model-op.rda")
+load("C:/Users/Neal/projects/big-rdas/ht-growth-model-op.rda")
+load("C:/Users/Neal/projects/big-rdas/cr-growth-model-op.rda")
+load("C:/Users/Neal/projects/big-rdas/mort-model-op.rda")
+
+load("C:/Users/Neal/projects/big-rdas/dbh-growth-test.rda")
+load("C:/Users/Neal/projects/big-rdas/ht-test.rda")
+load("C:/Users/Neal/projects/big-rdas/ht-growth-test.rda")
+load("C:/Users/Neal/projects/big-rdas/cr-growth-test.rda")
+load("C:/Users/Neal/projects/big-rdas/mort-test.rda")
+
+# calculates RMSE:
+RMSE <- function(actual, predicted){
+  sqrt(mean((actual - predicted)^2))
+}
+
+# calculates coefficient of determination:
+R2 <- function(actual, predicted){
+  postResample(predicted, actual)[[2]]
+}
+
+# calculates mean absolute error:
+MAE <- function(actual, predicted){
+  sum(abs(actual - predicted))/length(actual)
+}
+```
+#Diameter Growth Submodel
+
+```{r}
+results <- dbh_growth_test %>% 
+  rename(y = dbh_rate) %>% 
+  mutate(y_hat = predict(dbh_growth_model_op, newdata = dbh_growth_test),
+         err = y - y_hat)
+
+totals <- tibble(spp = "Combined",
+                 n = nrow(results),
+                 y_mean = round(mean(results$y), 3),
+                 RMSE = round(RMSE(results$y, results$y_hat), 4),
+                 nRMSE = round(RMSE/y_mean, 3),
+                 MAE = round(MAE(results$y, results$y_hat), 4),
+                 r2 = round(R2(results$y, results$y_hat), 3))
+
+results %>% 
+  group_by(spp) %>% 
+  summarize(n = n(),
+            y_mean = round(mean(y), 3),
+            RMSE = round(RMSE(y, y_hat), 4),
+            nRMSE = round(RMSE/y_mean, 3),
+            MAE = round(MAE(y, y_hat), 4),
+            r2 = round(R2(y, y_hat), 3)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(spp = as.character(spp)) %>% 
+  rbind(totals) %>% 
+  kable(booktabs = T, escape = F, linesep = "",
+        align = c("l", "c", "c", "c", "c", "c", "c"),
+        col.names = c("Species",
+                      "n",
+                      "mean $\\Delta$dbh",
+                      "RMSE",
+                      "nRMSE",
+                      "MAE",
+                      "$R^{2}$"),
+        caption = "Results of diameter growth submodel, tested against an independent dataset. Diameter growth is measured in inches per year.") %>% 
+  kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+  row_spec(length(unique(results$spp)) + 1, 
+           bold = T, italic = T, background = '#DCDCDC') %>% 
+  row_spec(0, bold = T, italic = T, background = '#DCDCDC')
+
+```
+
+#Height Submodel
+
+```{r}
+results <- height_test %>%  
+  rename(y = ht_s) %>% 
+  mutate(y_hat = predict(ht_model_op, newdata = height_test),
+         err = y - y_hat)
+
+totals <- tibble(spp = "Combined",
+                 n = nrow(results),
+                 y_mean = round(mean(results$y), 3),
+                 RMSE = round(RMSE(results$y, results$y_hat), 4),
+                 nRMSE = round(RMSE/y_mean, 3),
+                 MAE = round(MAE(results$y, results$y_hat), 4),
+                 r2 = round(R2(results$y, results$y_hat), 3))
+
+results %>% 
+  group_by(spp) %>% 
+  summarize(n = n(),
+            y_mean = round(mean(y), 3),
+            RMSE = round(RMSE(y, y_hat), 4),
+            nRMSE = round(RMSE/y_mean, 3),
+            MAE = round(MAE(y, y_hat), 4),
+            r2 = round(R2(y, y_hat), 3)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(spp = as.character(spp)) %>% 
+  rbind(totals) %>% 
+  kable(booktabs = T, escape = F, linesep = "",
+        align = c("l", "c", "c", "c", "c", "c", "c"),
+        col.names = c("Species",
+                      "n",
+                      "mean height",
+                      "RMSE",
+                      "nRMSE",
+                      "MAE",
+                      "$R^{2}$"),
+        caption = "Results of total height submodel, tested against an independent dataset. Height is measured in feet.") %>% 
+  kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+  row_spec(length(unique(results$spp)) + 1, 
+           bold = T, italic = T, background = '#DCDCDC') %>% 
+  row_spec(0, bold = T, italic = T, background = '#DCDCDC')
+
+```
+
+#Height Growth Submodel
+
+```{r}
+results <- ht_growth_test %>%  
+  rename(y = ht_rate) %>% 
+  mutate(y_hat = predict(ht_growth_model_op, newdata = ht_growth_test),
+         err = y - y_hat)
+
+totals <- tibble(spp = "Combined",
+                 n = nrow(results),
+                 y_mean = round(mean(results$y), 3),
+                 RMSE = round(RMSE(results$y, results$y_hat), 4),
+                 nRMSE = round(RMSE/y_mean, 3),
+                 MAE = round(MAE(results$y, results$y_hat), 4),
+                 r2 = round(R2(results$y, results$y_hat), 3))
+
+results %>% 
+  group_by(spp) %>% 
+  summarize(n = n(),
+            y_mean = round(mean(y), 3),
+            RMSE = round(RMSE(y, y_hat), 4),
+            nRMSE = round(RMSE/y_mean, 3),
+            MAE = round(MAE(y, y_hat), 4),
+            r2 = round(R2(y, y_hat), 3)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(spp = as.character(spp)) %>% 
+  rbind(totals) %>% 
+  kable(booktabs = T, escape = F, linesep = "",
+        align = c("l", "c", "c", "c", "c", "c", "c"),
+        col.names = c("Species",
+                      "n",
+                      "mean $\\Delta$ht",
+                      "RMSE",
+                      "nRMSE",
+                      "MAE",
+                      "$R^{2}$"),
+        caption = "Results of height growth submodel, tested against an independent dataset. Height growth is measured in feet per year.") %>% 
+  kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+  row_spec(length(unique(results$spp)) + 1, 
+           bold = T, italic = T, background = '#DCDCDC') %>% 
+  row_spec(0, bold = T, italic = T, background = '#DCDCDC')
+
+```
+
+#Crown Ratio Change Submodel
+
+```{r}
+results <- cr_growth_test %>%  
+  rename(y = cr_rate) %>% 
+  mutate(y_hat = predict(cr_growth_model_op, newdata = cr_growth_test),
+         err = y - y_hat)
+
+totals <- tibble(spp = "Combined",
+                 n = nrow(results),
+                 y_mean = round(mean(results$y), 3),
+                 RMSE = round(RMSE(results$y, results$y_hat), 4),
+                 nRMSE = round(RMSE/y_mean, 3),
+                 MAE = round(MAE(results$y, results$y_hat), 4),
+                 r2 = round(R2(results$y, results$y_hat), 3))
+
+results %>% 
+  group_by(spp) %>% 
+  summarize(n = n(),
+            y_mean = round(mean(y), 3),
+            RMSE = round(RMSE(y, y_hat), 4),
+            nRMSE = round(RMSE/y_mean, 3),
+            MAE = round(MAE(y, y_hat), 4),
+            r2 = round(R2(y, y_hat), 3)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(spp = as.character(spp)) %>% 
+  rbind(totals) %>% 
+  kable(booktabs = T, escape = F, linesep = "",
+        align = c("l", "c", "c", "c", "c", "c", "c"),
+        col.names = c("Species",
+                      "n",
+                      "mean $\\Delta$CR",
+                      "RMSE",
+                      "nRMSE",
+                      "MAE",
+                      "$R^{2}$"),
+        caption = "Results of crown ratio change submodel, tested against an independent dataset. Crown ratio change is measured in change of percent per year, with positive numbers indicating increasing crown ratios.") %>% 
+  kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+  row_spec(length(unique(results$spp)) + 1, 
+           bold = T, italic = T, background = '#DCDCDC') %>% 
+  row_spec(0, bold = T, italic = T, background = '#DCDCDC')
+
+```
+
+\newpage
+#Survival Submodel
+
+Where results depend on a positive class, the positive class is "lived".
+
+```{r, results='asis'}
+y <- mort_test$died
+y_hat <- predict(mort_model_op, 
+                 newdata = mort_test)
+y_hat_prob <- predict(mort_model_op, 
+                      newdata = mort_test, 
+                      type = "prob")
+
+cm <- confusionMatrix(data = y_hat, reference = y, positive = "lived")
+
+tp <- as.numeric(cm$table[1,1])
+fn <- as.numeric(cm$table[2,1])
+fp <- as.numeric(cm$table[1,2])
+tn <- as.numeric(cm$table[2,2])
+n <- tp + fn + fp + tn
+
+mcc <- ((tp*tn)-(fp*fn))/sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+  
+cm$overall %>% 
+  kable(booktabs = T, linesep = "", digits = 3,
+        caption = "Overall accuracy estimates, calculated on independent data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, results='asis'}
+cm$byClass %>% 
+  kable(booktabs = T, linesep = "", digits = 3,
+        caption = "Accuracy estimates by class, calculated on independent data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, results='asis'}
+cm$table %>% 
+  kable(booktabs = T, linesep = "",
+        caption = "Confusion matrix. Columns are actual, observed outcomes; rows are predicted outcomes.") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r}
+result_roc <- roc(y, y_hat_prob$lived, ci = T) # Calculate ROC curve
+
+# plot(result_roc, print.auc = T) #plot ROC with AUC on it
+```
+
+The AUROC, calculated on independent data, was estimated to be `r result_roc$auc`, with a confidence interval between `r result_roc$ci[[1]]` and `r result_roc$ci[[3]]`.

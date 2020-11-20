@@ -1,0 +1,59 @@
+---
+title: "Nonparametric individual-tree growth models for the US Northern Forest"
+author: "Neal Maker & John Foppert"
+date: '`r format(lubridate::today(), format = "%B %d, %Y")`'
+output: 
+  pdf_document:
+    fig_caption: TRUE
+    df_print: kable
+bibliography: ["citations.bib"]
+link-citations: yes
+---
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, warning = FALSE, 
+                      message = FALSE, cache = TRUE)
+library("tidyverse")
+library("maps")
+library("caret")
+library("Rborist")
+library("extrafont")
+library("knitr")
+library("gridExtra")
+
+download.file("https://github.com/nealmaker/bibliography/raw/master/citations.bib", "citations.bib")
+```
+
+#Introduction
+
+Numerous tree growth models have been developed for the forests of the Northeast, which vary in their methodological approaches and in their applicability. As focus has shifted from plantation- to natural forest-management and as computing power has increased, there has been a movement from stand-level approaches (which use standwide metrics and are better suited to even-aged, monospecific stands) to individual-tree approaches (which consider the attributes of individual trees and are better suited to structurally complex, multi-species stands) [@peng_growth_2000]. Simultaneously, interest in process-based models has grown because of their superiority making long-term predictions--especially in the face of climate change [@cuddington_process-based_2013]. Process-based models mimic known ecological processes, so they can be applied to novel scenarios as long as those underlying processes don't change. Emperical models, which ignore the underlying ecological processes, are only applicable to scenarios that are represented in the data used to build them. More purely process-based models are therefore well suited to research, but not as well suited to forest management planning because they are more complex, often depend on difficult to measure ecological parameters, and are generally not as accurate over shorter time-scales [@peng_growth_2000]. 
+
+Modern operational models usually strike a balance by using a more emperical approach that is still structured around an ecologically informed conception of growth dynamics. They are generally parametric models, with predetermined structures to ensure that they are somewhat mechanistically realistic, but with model coefficients determined emperically. For example, @weiskittel_development_2016 used nonlinear mixed effects modeling to predict total height, bole height, diameter increment, height increment, and mortality in the Adirondacks, with different predictors and equation forms for individual submodels based on previous knowledge of the relevant relationships. @westfall_predicting_2006 and @westfall_merchantable_2006 used very similar mixed effects models to predict diameter increment in the Northeast and height in Maine, respectively. And @teck_individual_1991 used a somewhat more mechanistic approach for their Northeastern diameter growth model: first predicting the maximum potential growth rate based on species, diameter, and site index, then modifying that prediction downward based on overtopping basal area. All of these models use a handful of predictors whose effects had been studied previously.
+
+Meanwhile, the rise of big data in the last several decades has led to the development of sophisticated nonparametric models, which do not require a priori specification of model structures and do not rely on any assumptions about populations’ probability distributions. Nonparametric models are purely emperical and excel in situations where processes are poorly understood. They have not been widely adopted by foresters, and have several obvious disatvantages to conventional parametric models. First, they cannot be applied to novel situations and are especially bad at making long-term predictions in a changing climate. Second, they fail to incorporate the knowledge gained from past studies, so using them is kind of like starting over instead of building on the decades of research that is available. And thirdly, nonparametric models tend to be much more complex than parametric models: harder to interpret, more computationally intensive, and less accessible to forest managers.
+
+At the same time, these characteristics give nonparametric models some real advantages, especially in the ecologically complex Northern Forest. While parametric models must stick to a handful of well-researched predictors that can be accurately specified, nonparametric models can account for poorly-understood predictors; and can capture interactions between multiple predictors--which are more likely to exist in complex ecosystems--even if those interactions were previously unknown. Also, many nonparametric models are capable of handling large amounts of data and large numbers of predictors simultaneously, allowing a more holistic approach to growth modeling. Even if these advantages don't appreciably increase models' overall accuracy, they make nonparametric models more nuanced and likely decrease bias at finer scales (capturing the subtle differnces between trees in different situations). And big strides have been made recently in interpreting nonparametric models, so that the complex relationships they uncover can be seen and studied [@goldstein_peeking_2015; @molnar_interpretable_2020].
+
+This paper describes our development of nonparametric diameter increment, height, height increment, survival, and crown ratio change models for the US Northern Forest. Our principal goals in building the models were to (1) allow foresters to make short-term predictions that better account for ecological complexity, and can be used to plan irregular management regimes, and (2) study the growth effects of poorly understood factors and the interactions between factors, to add to our understanding of Northern Forest growth dynamics. 
+
+# Data
+
+We took advantage of the large, statistically rigerous Forest Inventory and Analysis (FIA) database that the US Forest Service maintains, which tracks numerous tree, stand, and site characteristics. 
+
+The model described here is built on a considerably larger sample than previous models, which was drawn from the US Northern Forest region [@maker_development_2019]. The Northern Forest covers a fairly broad geographic area while still representing a coherent socio-ecological unit--in which trees can be expected to follow a similar set of patterns. 
+
+Each model was trained against more than 200,000 observations of individual trees, drawn from more than 10,000 remeasured inventory plots, using sixteen predictive variables.
+
+# Analysis
+
+We chose tree-based, Random Forest algorithms for their ability to handle many predictors, their computational efficiency, and their easy integration of numeric and categorical predictors.  A number of tools were used to interpret the models, to quantify the importance of individual predictors and to visualize the relationships between predictors and growth outcomes.
+
+A random forest algorithm was chosen to train the model, for a number of reasons. first, random forests can handle a large number of predictors, unlike generative models (which would require many parameters and be subject to overfitting) or nearest neighbor-type algorithms (which suffer the "curse of dimensionality"). Second, they are computationally efficient, especially when being used for prediction. Because the model will be used by practitioners "in the field", this will be a major asset. Finally, random forest algorithms can account for the interactions between numeric and categorical predictors, like those between species and latitude, or between stand basal area and forest type. Interactions like these are not accounted for in most existing growth models, and they can help to describe some of the variation in diameter growth rates, increasing the accuracy.
+
+# Results
+
+# Discussion
+
+Competition indices can still be obtained from conventional (non-spatial) inventory techniques, and in many cases they can be used to derive growth estimates with overall accuracies comparable to those derived from spatially-explicit competition indices [@kuehne_comparing_2019]. Still, subtler growth effects at the individual tree scale are probably better accounted for by spatially explicit modeling, and these are particularly important to the management of complex irregular forests. Also, spatially explicit, process based models are much more capable when it comes to modeling novel scenarios, like tree growth in a changing climate, and the effects of new management regimes [@cuddington_process-based_2013].
+
+# Literature Cited

@@ -1,0 +1,649 @@
+---
+title: "DBH Increment Model"
+subtitle: "for the Northern Forest"
+author: "Neal Maker"
+output: html_notebook
+---
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error = FALSE, warning = FALSE, message = FALSE)
+
+library("tidyverse")
+library("caret")
+```
+
+## Project Goals
+
+1. Spot check numerous algorithms for modeling tree diameter growth, which represent a diversity of methodologies. Focus on:
+  - model accuracy
+  - size of model object (to address memory concerns in simulator)
+  - prediction time
+2. Explore promising algorithms more thoroughly. Consider:
+  - variable selection (perhaps removing factors with near-zero variance)
+  - parameter optimization with grid- or hyperparameter-searching
+  - species-specific models in place of unified models
+3. Train a 'best case' model for use in simulator
+4. Re-parameterize existing, published models on this dataset for comparison
+
+## Data
+
+```{r fetch, cache=TRUE}
+invisible({capture.output({
+  
+temp <- tempfile()
+download.file(
+  "https://github.com/nealmaker/fia-data-nf/raw/master/rda/nf-fia.rda", 
+  temp)
+load(temp)
+
+# remove trees that died and unwanted variables
+nf_fia <- nf_fia %>%
+  filter(status_change == "lived") %>% 
+  select(dbh_rate, spp, dbh_mid, cr_mid, crown_class_s, tree_class_s,
+         ba_mid, bal_mid, forest_type_s, stocking_s, landscape, 
+         site_class, slope, aspect, lat, lon, elev, ba_ash:bal_yellow.birch, 
+         plot) %>% 
+  rename(dbh = dbh_mid, cr = cr_mid, crown_class = crown_class_s,
+         tree_class = tree_class_s, ba = ba_mid, bal = bal_mid,
+         forest_type = forest_type_s, stocking = stocking_s)
+})})
+```
+
+Forest Inventory and Analysis data were used from the US Northern Forest region. They consist of observations of `r nrow(nf_fia)` remeasured trees, located in `r length(unique(nf_fia[, ncol(nf_fia)]))` unique sample plots. Details are available at the project's [GitHub page](https://github.com/nealmaker/fia-data-nf).
+
+The data include `r ncol(nf_fia) - 2` potential predictors, which include individual tree attributes as well as plot-level attributes and site attributes. Three of the predictors began as non-ordinal categorical variables, and the rest were numeric.
+
+## Preprocessing and Splitting
+
+The three categorical variables were re-coded using one-hot encoding, to allow for their incorporation in various regression models. Many of the predictors are related to species-specific plot basal area and species-specific overtopping basal area. These are often unbalanced (the majority of observations are 0) and have very low variance, but may still be informative, much like dummy variables. For this reason features with near-zero variance were retained for the time being. 
+
+```{r preprocess, cache=TRUE}
+dbh_rates <- nf_fia$dbh_rate
+plots <- nf_fia$plot
+
+# one-hot encoding for categorical factors (but not plot)
+nf_fia <- select(nf_fia, -plot)
+
+dummies <- dummyVars(dbh_rate ~ ., data = nf_fia)
+features <- predict(dummies, newdata = nf_fia)
+
+# remove features with near-zero variance
+# THIS WOULD REMOVE MOST ONE-HOTS AND SPP-SPEC BA/BALs
+# nzv <- nearZeroVar(nf_fia)
+# out <- nf_fia[, -nzv]
+# dim(out)
+```
+
+```{r split, cache=TRUE}
+# test set is 20% of full dataset
+test_size <- .2
+
+# define test set based on plots (to make it truely independent)
+set.seed(10)
+test_plots <- sample(unique(plots), 
+                     size = round(test_size * length(unique(plots))), 
+                     replace = FALSE)
+
+index <- which(plots %in% test_plots)
+train <- features[-index, ]
+trainy <- dbh_rates[-index]
+test <- features[index, ]
+testy <- dbh_rates[index]
+
+# sample from training data to expediate algorithm testing
+subsamp_size <- 6000
+set.seed(201)
+subsamp <- sample(1:nrow(train), 
+                  size = subsamp_size,
+                  replace = FALSE)
+
+x <- train[subsamp, ]
+y <- trainy[subsamp]
+```
+
+Data from `r 100 * test_size`% of all the sample plots was set aside for testing the final model. Data were split based on plots to make sure that the testing data was truly independent. The data from the remaining `r 100 * (1 - test_size)`% of plots were used to explore different algorithms and to train the final model. Spot checking of numerous algorithms would have been very slow on all the training data, so a random sample of `r subsamp_size` observations was drawn from the training data and used instead.
+
+```{r test_options, cache=TRUE}
+# Repeated cross validation
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 7
+metric <- "RMSE"
+```
+
+```{r spot_checks, cache=TRUE}
+invisible({capture.output({
+  
+# train in parallel to speed
+library(doParallel)
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+# generalized linear model
+set.seed(seed)
+fit.glmnet <- train(x, y, method = 'glmnet', metric=metric, 
+                    preProc=c("center", "scale"), trControl=control)
+# neural network (one layer)
+set.seed(seed)
+fit.nnet <- train(x, y, method = 'nnet', metric=metric, 
+                  preProc=c("center", "scale"), trControl=control)
+# linear support vector machine
+set.seed(seed)
+fit.svmLinear <- train(x, y, method = 'svmLinear', metric=metric, 
+                       preProc=c("center", "scale"), trControl=control)
+# radial support vector machine
+set.seed(seed)
+fit.svmRadial <- train(x, y, method = 'svmRadial', metric=metric, 
+                       preProc=c("center", "scale"), trControl=control)
+# k-nearest neighbor
+set.seed(seed)
+fit.knn <- train(x, y, method = 'knn', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control)
+# cart (trees)
+set.seed(seed)
+fit.cart <- train(x, y, method = 'rpart', metric=metric, 
+                  preProc=c("center", "scale"), trControl=control)
+# bagged trees
+set.seed(seed)
+fit.bagcart <- train(x, y, method = 'treebag', metric=metric, 
+                     preProc=c("center", "scale"), trControl=control)
+# random forest
+set.seed(seed)
+fit.rf <- train(x, y, method = 'ranger', metric=metric, 
+                preProc=c("center", "scale"), trControl=control)
+# gradient boosting machine
+set.seed(seed)
+fit.gbm <- train(x, y, method = 'gbm', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE)
+# linear regression
+set.seed(seed)
+fit.lm <- train(x, y, method = 'lm', metric=metric, 
+                  preProc=c("center", "scale"), trControl=control)
+# penalized linear regression SLOW!
+set.seed(seed)
+fit.penalized <- train(x, y, method = 'penalized', metric=metric, 
+                  preProc=c("center", "scale"), trControl=control)
+# multivariate adaptive regression splines
+set.seed(seed)
+fit.earth <- train(x, y, method = 'earth', metric=metric, 
+                  preProc=c("center", "scale"), trControl=control)
+# cubist model tree SLOW!
+set.seed(seed)
+fit.cubist <- train(x, y, method = 'cubist', metric=metric,
+                  preProc=c("center", "scale"), trControl=control)
+# regularized random forest WICKED SLOW! (AND NOT WORTH THE FUSS)
+# set.seed(seed)
+# fit.rrf <- train(x, y, method = 'RRFglobal', metric=metric,
+#                   preProc=c("center", "scale"), trControl=control)
+
+stopCluster(cl)
+})})
+```
+
+```{r spotsFiltered}
+invisible({capture.output({
+  
+# remove features with near-zero variance
+nzv <- nearZeroVar(x)
+x2 <- x[, -nzv]
+
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+# ridge regression
+set.seed(seed)
+fit.ridge <- train(x2, y, method = 'ridge', metric=metric,
+                   preProc=c("center", "scale"), trControl=control)
+# quantile regression with LASSO penalty
+set.seed(seed)
+fit.lasso <- train(x2, y, method = 'rqlasso', metric=metric,
+                   preProc=c("center", "scale"), trControl=control)
+# bayesian ridge regression SLOW!
+set.seed(seed)
+fit.bridge <- train(x2, y, method = 'bridge', metric=metric,
+                    preProc=c("center", "scale"), trControl=control, verb = 0)
+# elastic net
+set.seed(seed)
+fit.enet <- train(x2, y, method = 'enet', metric=metric,
+                  preProc=c("center", "scale"), trControl=control)
+
+stopCluster(cl)
+})})
+```
+
+```{r compile_spots, cache=TRUE}
+fits <- list(
+  glmnet = fit.glmnet,
+  nnet = fit.nnet,
+  svmLinear = fit.svmLinear,
+  svmRadial = fit.svmRadial,
+  knn = fit.knn,
+  cart = fit.cart,
+  bagcart = fit.bagcart,
+  rf = fit.rf,
+  gbm = fit.gbm,
+  lm = fit.lm,
+  penalized = fit.penalized,
+  mars = fit.earth, 
+  cubist = fit.cubist,
+  # rrf = fit.rrf,
+  ridge = fit.ridge,
+  lasso = fit.lasso,
+  bridge = fit.bridge,
+  enet = fit.enet
+  )
+
+results <- resamples(fits)
+sizes <- sapply(1:length(fits), function(i) {
+  lobstr::obj_size(fits[[i]]$finalModel)
+})
+predtimes <- lapply(1:length(fits), function(j) {
+  times <- sapply(1:30, function(k) {
+    system.time(predict(fits[[j]], 
+                        newdata = train[sample(1:nrow(train), 1000, 
+                                               replace = F), ]))[[3]]
+  })
+  return(data.frame(model = rep(names(fits)[[j]], 30),
+                    time = times))
+})
+predtimes <- do.call(rbind, predtimes)
+```
+
+## Spot-Checks
+
+A diverse set of `r length(fits)` algorithms was successfully spot-checked using repeated ten-fold cross validation, with root mean square error as the evaluation metric. Spot-checking was designed to quickly identify the most promising types of algorithms, and default parameters were used. Five of the algorithms that employ L1 or L2 regularization could not be trained with near-zero variance features. The near-zero variance features were removed for checking those algorithms, but were retained for the others. Removing the features is not ideal, because they could be informative despite their low variance (especially dummy variables for less common species), but it allows for a first-pass assessment of the algorithms' strengths and weaknesses. 
+
+``` {r spotResults, fig.cap="Accuracies of spot-checked algorithms, using three metrics. Accuracies were estimated using repeated cross validation.", cache=FALSE}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(results, scales = scales)
+```
+
+```{r spotPredtimes, fig.cap="Prediction times for spot-checked algorithms, based on 30 random samples of 1,000 trees each.", cache=FALSE}
+predtimes %>% 
+  mutate(model = fct_reorder(factor(model), time, median, .desc = T)) %>% 
+  ggplot(aes(model, time)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  scale_y_continuous(name = "seconds to make 1,000 predictions")
+```
+
+```{r spotSizes, fig.cap="Sizes of spot-checked model objects.", cache=FALSE}
+data.frame(model = names(fits), size = sizes) %>% 
+  mutate(size = size / 1000000,
+         model = fct_reorder(factor(model), size, .desc = T)) %>% 
+  ggplot(aes(model, size)) + 
+  geom_point(size = 2) + 
+  geom_segment( aes(x=model, xend=model, y=0, yend=size)) + 
+  coord_flip() +
+  scale_y_continuous(name = "model size (megabytes)")
+```
+
+The spot-checking demonstrated that non-linear methods like model trees, random forests, gradient boosting machines, and neural networks tend to be the most accurate in this case. Regularized parametric models are not as accurate, but are notable because they tend to be smaller and faster at making predictions. Their accuracy might also be improved by building species-specific models, as the species information was encoded in dummy variables and much of it was removed before spot checking them.
+
+Of the non-linear models, the gradient boosting machine (gbm) looks to be the best compromise, offering high accuracies with relatively short prediction times in a smallish package. The single layer neural network that was checked (nnet) also represents a nice compromise, though it doesn't score quite as well as the gbm in any category.
+
+There was one L1-L2 regularized model (the generalized linear model glmnet) that was succesfully checked using near-zero variance features, and it scored similarly to the gbm and nnet in all three categories. It used a gaussian formula with lasso regularization in its default setting. The other L1 and L2 regularized models all show promise as well, especially if more information about species could be folded in to improve accuracies. Ridge regression, lasso, and elasticnet (enet) are virtually indistinguishable in size, speed, and accuracy, and are the smallest and fastest of all the algorithms in the spot-check.
+
+##  Promising Algorithms
+
+To further winnow possible algorithms, four were explored in more depth: the gbm, the nnet, the glmnet, and the lasso. These were trained on all of the training data, and a grid search was used to optimize their tuning parameters. Each was tried with and without feature selection (fs), which consisted of removing predictors with near-zero variance and removing highly correlated predictors. The lasso was trained with one-hot encoding and feature selection, like the other models, and also without one-hot encoding using species-specific submodels to fully capture species effects.
+
+```{r clean_spot}
+# remove spot-checking objects
+rm(list=ls(pattern="^fit"))
+rm(results, sizes, predtimes)
+
+# remove features with near-zero variance
+nzv <- nearZeroVar(train)
+train_fs <- train[, -nzv]
+
+# remove highly correlated features
+trainCor <- cor(train_fs)
+highlyCor <- findCorrelation(trainCor, cutoff = .75)
+train_fs <- train_fs[, -highlyCor]
+```
+
+```{r gbm}
+invisible({capture.output({
+  
+# train in parallel to speed
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+set.seed(seed)
+fit.gbm <- train(train, trainy, method = 'gbm', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+fit.gbm.fs <- train(train_fs, trainy, method = 'gbm', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5)
+
+stopCluster(cl)
+})})
+```
+
+```{r nnet}
+invisible({capture.output({
+  
+# train in parallel to speed
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+set.seed(seed)
+fit.nnet <- train(train, trainy, method = 'nnet', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+fit.nnet.fs <- train(train_fs, trainy, method = 'nnet', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5)
+
+stopCluster(cl)
+})})
+```
+
+```{r glmnet}
+invisible({capture.output({
+  
+# train in parallel to speed
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+set.seed(seed)
+fit.glmnet <- train(train, trainy, method = 'glmnet', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+fit.glmnet.fs <- train(train_fs, trainy, method = 'glmnet', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5)
+
+stopCluster(cl)
+})})
+```
+
+```{r lasso}
+invisible({capture.output({
+  
+# features w/o one-hot encoding
+x <- nf_fia[-index, c(2:8, 10, 12:17)]
+
+# train in parallel to speed
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+set.seed(seed)
+fit.lasso.fs <- train(train_fs, trainy, method = 'rqlasso', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+fits.lasso.sppspec <- lapply(levels(x$spp), function(i) {
+  index <- x$spp == i
+  out <- train(x[index, -1], trainy[index], method = 'rqlasso', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+  return(out)
+}) 
+
+stopCluster(cl)
+
+predict.lasso <- function(data) {
+  sapply(1:nrow(data), function(n) {
+    predict(fits.lasso.sppspec[[match(data$spp[n], levels(x$spp))]],
+        newdata = data[n, ])
+  })
+}
+})})
+```
+
+```{r compileSecond}
+fits <- list(
+  glmnet = fit.glmnet,
+  glmnet_nzv = fit.glmnet.fs,
+  nnet = fit.nnet,
+  nnet_nzv = fit.nnet.fs,
+  gbm = fit.gbm,
+  gbm_nzv = fit.gbm.fs,
+  lasso_onehot = fit.lasso.fs)
+
+results <- resamples(fits)
+lasso_results <- resample(fits.lasso.sppspec)
+
+sizes <- sapply(1:length(fits), function(i) {
+  lobstr::obj_size(fits[[i]]$finalModel)
+})
+size_lasso <- sum(do.call(lobstr::obj_size, fits.lasso.sppspec))
+predtimes <- lapply(1:length(fits), function(j) {
+  times <- sapply(1:30, function(k) {
+    system.time(predict(fits[[j]], 
+                        newdata = train[sample(1:nrow(train), 1000, 
+                                               replace = F), ]))[[3]]
+  })
+  return(data.frame(model = rep(names(fits)[[j]], 30),
+                    time = times))
+})
+predtimes <- do.call(rbind, predtimes)
+
+predtimes_lasso <- sapply(1:30, function(m) {
+  system.time(predict.lasso(x[sample(1:nrow(x), 1000, replace = F), ]))[[3]]
+})
+
+predtimes <- rbind(predtimes, data.frame(model = "lasso_sppspec", 
+                                         time = predtimes_lasso))
+```
+
+``` {r secondResults, fig.cap="Accuracies of refined algorithms, using three metrics. Accuracies were estimated using repeated cross validation.", cache=FALSE}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(results, scales = scales)
+```
+
+```{r lassoRMSE}
+lasso_sppspec_rmse <- 
+  data.frame(spp = levels(x$spp), 
+             RMSE = summary(lasso_results)$statistics$RMSE[,4])
+row.names(lasso_sppspec_rmse) <- NULL
+
+lasso_sppspec_rmse %>% 
+  mutate(spp = fct_reorder(factor(spp), RMSE, .desc = T)) %>% 
+  ggplot(aes(spp, RMSE)) + 
+  geom_point(size = 2) + 
+  geom_segment( aes(x=spp, xend=spp, y=0, yend=RMSE)) + 
+  coord_flip() +
+  scale_y_continuous(name = "RMSE") +
+  scale_x_discrete(name = "") +
+  labs(title = "Accuracies of species-specific lasso models")
+```
+
+Average root mean square errors for the refined models range from `r round(min(summary(results)$statistics$RMSE[,4]), 3)` to `r round(max(summary(results)$statistics$RMSE[,4]), 3)` inches per year, excluding the species-specific lasso. The lasso's species-specific submodels had root mean square errors ranging from `r round(min(summary(lasso_results)$statistics$RMSE[,4]), 3)` to `r round(max(summary(lasso_results)$statistics$RMSE[,4]), 3)` inches per year, with an median submodel RMSE of `r round(median(summary(results)$statistics$RMSE[,4]), 3)` inches per year.
+
+```{r secondPredtimes, fig.cap="Prediction times for refined algorithms, based on 30 random samples of 1,000 trees each.", cache=FALSE}
+predtimes %>% 
+  mutate(model = fct_reorder(factor(model), time, median, .desc = T)) %>% 
+  ggplot(aes(model, time)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  scale_y_continuous(name = "seconds to make 1,000 predictions") + 
+  labs(caption = "* Models ammended with'_fs' use feature selection.")
+```
+
+```{r secondSizes, fig.cap="Sizes of refined model objects.", cache=FALSE}
+data.frame(model = names(fits), size = sizes) %>%
+  rbind(data.frame(model = "lasso_sppspec", size = size_lasso)) %>% 
+  mutate(size = size / 1000000,
+         model = fct_reorder(factor(model), size, .desc = T)) %>% 
+  ggplot(aes(model, size)) + 
+  geom_point(size = 2) + 
+  geom_segment( aes(x=model, xend=model, y=0, yend=size)) + 
+  coord_flip() +
+  scale_y_continuous(name = "model size (megabytes)") + 
+  labs(caption = "* Models ammended with'_fs' use feature selection.")
+```
+
+Overall, it looks like feature selection decreased the size of model objects by several hundred megabytes and increased the RMSE by about 0.05 inches per year. Its effect on prediction speed appears to have been negligible. 
+
+With the lasso, using species-specific submodels did decrease the RMSE a bit, but it also increased the model size some and slowed down predictions drastically. The slow-down was probably because of the additional time needed to switch between models on an observation-by-observation basis. Code optimization could probably reduce the prediction times some, but it is unlikely that they could be made comparable to the times seen in the other models.
+
+# Best Model
+
+The neural network is a bit bigger than the other models, but it is also the most accurate. As a final comparison, a number of different implementations of the neural network were explored using the smaller sample of training data, to see if any additional improvements could be gained.
+
+```{r neurals}
+# remove second round objects
+rm(list=ls(pattern="^fit"))
+rm(results, sizes, predtimes)
+
+invisible({capture.output({
+  
+# train in parallel to speed
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+set.seed(seed)
+fit.nnet <- train(x, y, method = 'nnet', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+# ERR: all RMSE missing
+# set.seed(seed)
+# fit.brnn <- train(x, y, method = 'brnn', metric=metric, 
+#                  preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+#                  tuneLength = 5) # number of values for each tuning param
+
+set.seed(seed)
+fit.avNNet <- train(x, y, method = 'avNNet', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+set.seed(seed)
+fit.mlp <- train(x, y, method = 'mlp', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+set.seed(seed)
+fit.mlpWeightDecayML <- train(x, y, method = 'mlpWeightDecayML', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 5) # number of values for each tuning param
+
+# MISSING PACKAGE ISSUE
+# set.seed(seed)
+# fit.mlpSGD <- train(x, y, method = 'mlpSGD', metric=metric, 
+#                  preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+#                  tuneLength = 5) # number of values for each tuning param
+
+# ERR: all RMSE missing
+# set.seed(seed)
+# fit.dnn <- train(x, y, method = 'dnn', metric=metric, 
+#                  preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+#                  tuneLength = 5) # number of values for each tuning param
+
+# ERR: all RMSE missing
+# set.seed(seed)
+# fit.neuralnet <- train(x2, y, method = 'neuralnet', metric=metric, 
+#                  preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+#                  tuneLength = 5) # number of values for each tuning param
+
+stopCluster(cl)
+})})
+```
+
+```{r compileFinal}
+fits <- list(
+  nnet = fit.nnet,
+  # brnn = fit.brnn,
+  avNNet = fit.avNNet,
+  mlp = fit.mlp,
+  mlpWeightDecayML = fit.mlpWeightDecayML)
+  # mlpSGD = fit.mlpSGD,
+  # dnn = fit.dnn,
+  # neuralnet = fit.neuralnet)
+
+results <- resamples(fits)
+
+sizes <- sapply(1:length(fits), function(i) {
+  lobstr::obj_size(fits[[i]]$finalModel)
+})
+
+predtimes <- lapply(1:length(fits), function(j) {
+  times <- sapply(1:30, function(k) {
+    system.time(predict(fits[[j]], 
+                        newdata = train[sample(1:nrow(train), 1000, 
+                                               replace = F), ]))[[3]]
+  })
+  return(data.frame(model = rep(names(fits)[[j]], 30),
+                    time = times))
+})
+predtimes <- do.call(rbind, predtimes)
+```
+
+``` {r nnetResults, fig.cap="Accuracies of various neural networks, using three metrics. Accuracies were estimated using repeated cross validation.", cache=FALSE}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(results, scales = scales)
+```
+
+```{r nnetPredtimes, fig.cap="Prediction times for neural networks, based on 30 random samples of 1,000 trees each.", cache=FALSE}
+predtimes %>% 
+  mutate(model = fct_reorder(factor(model), time, median, .desc = T)) %>% 
+  ggplot(aes(model, time)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  scale_y_continuous(name = "seconds to make 1,000 predictions") 
+```
+
+```{r nnetSizes, fig.cap="Sizes of neural network model objects.", cache=FALSE}
+data.frame(model = names(fits), size = sizes) %>%
+  mutate(size = size / 1000000,
+         model = fct_reorder(factor(model), size, .desc = T)) %>% 
+  ggplot(aes(model, size)) + 
+  geom_point(size = 2) + 
+  geom_segment( aes(x=model, xend=model, y=0, yend=size)) + 
+  coord_flip() +
+  scale_y_continuous(name = "model size (megabytes)")
+```
+
+None of the neural network implementations changed the accuracy or the prediction size appreciably, but two of them decreased model object size substantially. The multi-layer perception model (mlp) offers probably the best mix of accuracy, prediction speed, and size. It was used to train a final, "best" model using all of the training data and a grid search to optimize the tuning parameter.
+
+```{r best}
+# remove previous nnet objects
+rm(list=ls(pattern="^fit"))
+rm(results, sizes, predtimes)
+
+invisible({capture.output({
+  
+# train in parallel to speed
+cl <- makePSOCKcluster(10)
+registerDoParallel(cl)
+
+set.seed(seed)
+fit.best <- train(train, trainy, method = 'mlp', metric=metric, 
+                 preProc=c("center", "scale"), trControl=control, verbose=FALSE,
+                 tuneLength = 10) # number of values for each tuning param
+
+stopCluster(cl)
+})})
+
+predtimes <- sapply(1:30, function(k) {
+    system.time(predict(fit.best, 
+                        newdata = train[sample(1:nrow(train), 1000, 
+                                               replace = F), ]))[[3]]
+  })
+
+var_imp <- varImp(fit.best, scale = F)
+
+# STOP!! Too big for GitHub. Don't commit. ------------------------
+# dbh_growth_model <- fit.best
+# save(dbh_growth_model, var_imp_dbh, file = "../big-rdas/dbh-growth-model-best.rda")
+```
+
+This final model has an estimated RMSE of `r round(mean(fit.best$resample[, 1]), 4)` inches per year, calculated with cross validation on the the training data. It averages `r mean(predtimes)` seconds to make 1,000 predictions (on this computer) and takes up `r lobstr::obj_size(fit.best$finalModel) / 1000000` megabytes in memory. 
+
+```{r test}
+y_hat <- predict(fit.best, newdata = test)
+
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+model_rmse <- RMSE(testy, y_hat)
+```
+
+When tested against the independent test data, the model's RMSE is `r round(model_rmse, 4)` inches per year. This is only `r round(100 * ((model_rmse - mean(fit.best$resample[, 1])) / mean(fit.best$resample[, 1])), 1)` percent higher than the RMSE estimated from the training data, demonstrating minimal overfitting.

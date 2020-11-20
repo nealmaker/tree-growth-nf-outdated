@@ -1,0 +1,17 @@
+base
+here
+tidyverse
+ggplot2
+tibble
+tidyr
+readr
+purrr
+dplyr
+stringr
+forcats
+pdp
+lattice
+caret
+kableExtra
+extrafont
+pROC

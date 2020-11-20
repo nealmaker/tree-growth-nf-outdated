@@ -1,0 +1,521 @@
+---
+title: "Tree Growth Submodels for the US Northern Forest"
+subtitle: "Estimated Results and Analysis"
+author: "Neal Maker & John Foppert"
+date: "`r lubridate::today()`"
+output: 
+  pdf_document:
+    fig_caption: TRUE
+    df_print: kable
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, warning = FALSE, message = FALSE, cache = F)
+
+library("here")
+library("tidyverse")
+library("pdp")
+library("caret")
+library("kableExtra")
+library("extrafont")
+library("pROC")
+
+load("C:/Users/Neal/projects/big-rdas/mort-model-full.rda")
+load("C:/Users/Neal/projects/big-rdas/dbh-growth-model-full.rda")
+load("C:/Users/Neal/projects/big-rdas/cr-growth-model-full.rda")
+load("C:/Users/Neal/projects/big-rdas/ht-model-full.rda")
+load("C:/Users/Neal/projects/big-rdas/ht-growth-model-full.rda")
+load("C:/Users/Neal/projects/tree-growth-nf/rda/dbh-ice.rda")
+load("C:/Users/Neal/projects/tree-growth-nf/rda/ht-ice.rda")
+load("C:/Users/Neal/projects/tree-growth-nf/rda/cr-ice.rda")
+load("C:/Users/Neal/projects/tree-growth-nf/rda/mort-ice.rda")
+load("C:/Users/Neal/projects/tree-growth-nf/rda/ht-growth-ice.rda")
+```
+
+```{r results='asis'}
+tibble(variable = rownames(varImp(dbh_growth_model_full)$importance),
+                 dbh_growth = varImp(dbh_growth_model_full)$importance$Overall,
+                 height = varImp(ht_model_full)$importance$Overall,
+                 height_growth = varImp(ht_growth_model_full)$importance$Overall,
+                 cr_growth = varImp(cr_growth_model_full)$importance$Overall,
+                 mort = varImp(mort_model_full)$importance$Overall[-1],
+                 mean = (dbh_growth + height + height_growth + cr_growth + mort)/5) %>% 
+  arrange(desc(mean)) %>% 
+  select(-mean) %>%
+  mutate(variable = gsub("_", " ", variable)) %>% 
+  mutate_if(is.numeric, function(x) {
+    cell_spec(round(x), background = spec_color(x, option = "C"))
+  }) %>% 
+  kable(booktabs = T, escape = F, linesep = "",
+        align = c("l", "c", "c", "c", "c", "c"),
+        col.names = c("variable",
+                      "$\\Delta$dbh",
+                      "height",
+                      "$\\Delta$height",
+                      "$\\Delta$cr",
+                      "survival"),
+        caption = "Scaled variable importance measures for predictors in individual submodels. Calculated on out of bag data using 'impurity' measure. The most important predictor for each model is ranked 100 and the least important is ranked 0.") %>% 
+  add_header_above(c(" " = 1, "submodel" =  5)) %>% 
+  kable_styling(latex_options = "hold_position")
+```
+
+\pagebreak
+
+#Diameter Growth Submodel
+
+```{r, results='asis'}
+getTrainPerf(dbh_growth_model_full)[,1:3] %>% 
+  kable(booktabs = T, linesep = "", digits = c(6,3,6),
+        col.names = c("RMSE", "R^2", "MAE"),
+        caption = "Accuracy estimates, calculated on out of bag data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, fig.cap="Overall error distribution estimated with kernal density."}
+error <- tibble(spp = dbh_growth_model_full$trainingData$spp, 
+              y = dbh_growth_model_full$trainingData$.outcome,
+              y_hat = dbh_growth_model_full$finalModel$predictions,
+              err = y - y_hat)
+
+error %>% ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (in/yr)") +
+  theme(text = element_text(family = "Perpetua"))
+```
+
+```{r, fig.cap="Error distributions for individual species estimated with kernal density. Blue vertical lines indicate 0 (no error). Brown vertical lines indicate mean species errors."}
+error %>% 
+  group_by(spp) %>% 
+  mutate(err_mean = mean(err)) %>% 
+  ungroup() %>% 
+  ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (in/yr)") +
+  theme(text = element_text(family = "Perpetua"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2),
+                     limits = c(-0.2, 0.2)) +
+  geom_vline(xintercept = 0, col = "#386cb0", size = 1) +
+  geom_vline(aes(xintercept = err_mean), col = "#bf5b17", size = 1) +
+  facet_wrap(~ spp)
+```
+
+\newpage
+
+```{r, results='asis'}
+spp_RMSE <- error %>% 
+  group_by(spp) %>% 
+  summarize(n = n(), nRMSE = 0) %>% 
+  arrange(desc(n))
+
+for (i in 1:length(spp_RMSE$spp)){
+  x <- filter(error, spp == spp_RMSE$spp[[i]])
+  spp_RMSE[i, 3] <- RMSE(x$y, x$y_hat)/mean(x$y)
+}
+
+kable(spp_RMSE, booktabs = T, linesep = "", digits = 4,
+      caption = "Sample sizes and normalized root mean square errors by species") %>% 
+  kable_styling(latex_options = "HOLD_position")
+```
+
+\vspace{100pt}
+\newpage
+
+```{r, fig.height=2.5}
+
+for(i in 1:16){
+  print(autoplot(dbh_pdp_s[[i]], 
+                 ylab = "dbh growth (in/yr)", 
+                 main = paste("PDP for", 
+                              names(dbh_growth_model_full$trainingData)[[i]]),
+                 col = "#386cb0",
+                 size = 1.2) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(dbh_ice[[i]], 
+                 ylab = "dbh growth (in/yr)", 
+                 main = paste("ICE plot for", 
+                              names(dbh_growth_model_full$trainingData)[[i]]), 
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(dbh_ice_c[[i]],
+                 ylab = "dbh growth centered", 
+                 main = paste("Centered ICE plot for", 
+                              names(dbh_growth_model_full$trainingData)[[i]]),
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+}
+```
+
+\newpage
+
+#Height Submodel
+
+```{r, results='asis'}
+getTrainPerf(ht_model_full)[,1:3] %>% 
+  kable(booktabs = T, linesep = "", digits = c(2,3,2),
+        col.names = c("RMSE", "R^2", "MAE"),
+        caption = "Accuracy estimates, calculated on out of bag data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, fig.cap="Overall error distribution estimated with kernal density."}
+error <- tibble(spp = ht_model_full$trainingData$spp, 
+              y = ht_model_full$trainingData$.outcome,
+              y_hat = ht_model_full$finalModel$predictions,
+              err = y - y_hat)
+
+error %>% ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (feet)") +
+  theme(text = element_text(family = "Perpetua"))
+```
+
+```{r, fig.cap="Error distributions for individual species estimated with kernal density. Blue vertical lines indicate 0 (no error). Brown vertical lines indicate mean species errors."}
+error %>% 
+  group_by(spp) %>% 
+  mutate(err_mean = mean(err)) %>% 
+  ungroup() %>% 
+  ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (feet)") +
+  theme(text = element_text(family = "Perpetua"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_vline(xintercept = 0, col = "#386cb0", size = 1) +
+  geom_vline(aes(xintercept = err_mean), col = "#bf5b17", size = 1) +
+  facet_wrap(~ spp)
+```
+
+\newpage
+
+```{r, results='asis'}
+spp_RMSE <- error %>% 
+  group_by(spp) %>% 
+  summarize(n = n(), nRMSE = 0) %>% 
+  arrange(desc(n))
+
+for (i in 1:length(spp_RMSE$spp)){
+  x <- filter(error, spp == spp_RMSE$spp[[i]])
+  spp_RMSE[i, 3] <- RMSE(x$y, x$y_hat)/mean(x$y)
+}
+
+kable(spp_RMSE, booktabs = T, linesep = "", digits = 4,
+      caption = "Sample sizes and normalized root mean square errors by species") %>% 
+  kable_styling(latex_options = "hold_position")
+```
+
+\vspace{100pt}
+\newpage
+
+```{r, fig.height=2.5}
+
+for(i in 1:16){
+  print(autoplot(ht_pdp_s[[i]], 
+                 ylab = "height (ft)", 
+                 main = paste("PDP for", 
+                              names(ht_model_full$trainingData)[[i]]),
+                 col = "#386cb0",
+                 size = 1.2) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(ht_ice[[i]], 
+                 ylab = "height (ft)", 
+                 main = paste("ICE plot for", 
+                              names(ht_model_full$trainingData)[[i]]), 
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(ht_ice_c[[i]],
+                 ylab = "height centered", 
+                 main = paste("Centered ICE plot for", 
+                              names(ht_model_full$trainingData)[[i]]),
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+}
+```
+
+\newpage
+
+#Height Growth Submodel
+
+```{r, results='asis'}
+getTrainPerf(ht_growth_model_full)[,1:3] %>% 
+  kable(booktabs = T, linesep = "", digits = c(6,3,6),
+        col.names = c("RMSE", "R^2", "MAE"),
+        caption = "Accuracy estimates, calculated on out of bag data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, fig.cap="Overall error distribution estimated with kernal density."}
+error <- tibble(spp = ht_growth_model_full$trainingData$spp, 
+              y = ht_growth_model_full$trainingData$.outcome,
+              y_hat = ht_growth_model_full$finalModel$predictions,
+              err = y - y_hat)
+
+error %>% ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (ft/yr)") +
+  theme(text = element_text(family = "Perpetua"))
+```
+
+```{r, fig.cap="Error distributions for individual species estimated with kernal density. Blue vertical lines indicate 0 (no error). Brown vertical lines indicate mean species errors."}
+error %>% 
+  group_by(spp) %>% 
+  mutate(err_mean = mean(err)) %>% 
+  ungroup() %>% 
+  ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (ft/yr)") +
+  theme(text = element_text(family = "Perpetua"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_vline(xintercept = 0, col = "#386cb0", size = 1) +
+  geom_vline(aes(xintercept = err_mean), col = "#bf5b17", size = 1) +
+  facet_wrap(~ spp)
+```
+
+\newpage
+
+```{r, results='asis'}
+spp_RMSE <- error %>% 
+  group_by(spp) %>% 
+  summarize(n = n(), nRMSE = 0) %>% 
+  arrange(desc(n))
+
+for (i in 1:length(spp_RMSE$spp)){
+  x <- filter(error, spp == spp_RMSE$spp[[i]])
+  spp_RMSE[i, 3] <- RMSE(x$y, x$y_hat)/mean(x$y)
+}
+
+kable(spp_RMSE, booktabs = T, linesep = "", digits = 4,
+      caption = "Sample sizes and normalized root mean square errors by species") %>% 
+  kable_styling(latex_options = "HOLD_position")
+```
+
+\vspace{100pt}
+\newpage
+
+```{r, fig.height=2.5}
+
+for(i in 1:16){
+  print(autoplot(ht_growth_pdp_s[[i]], 
+                 ylab = "height growth (ft/yr)", 
+                 main = paste("PDP for", 
+                              names(ht_growth_model_full$trainingData)[[i]]),
+                 col = "#386cb0",
+                 size = 1.2) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(ht_growth_ice[[i]], 
+                 ylab = "height growth (ft/yr)", 
+                 main = paste("ICE plot for", 
+                              names(ht_growth_model_full$trainingData)[[i]]), 
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(ht_growth_ice_c[[i]],
+                 ylab = "height growth centered", 
+                 main = paste("Centered ICE plot for", 
+                              names(ht_growth_model_full$trainingData)[[i]]),
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+}
+```
+
+\newpage
+
+#Crown Ratio Change Submodel
+
+```{r, results='asis'}
+getTrainPerf(cr_growth_model_full)[,1:3] %>% 
+  kable(booktabs = T, linesep = "", digits = c(2,3,2),
+        col.names = c("RMSE", "R^2", "MAE"),
+        caption = "Accuracy estimates, calculated on out of bag data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, fig.cap="Overall error distribution estimated with kernal density."}
+error <- tibble(spp = cr_growth_model_full$trainingData$spp, 
+              y = cr_growth_model_full$trainingData$.outcome,
+              y_hat = cr_growth_model_full$finalModel$predictions,
+              err = y - y_hat)
+
+error %>% ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (%change/yr)") +
+  theme(text = element_text(family = "Perpetua"))
+```
+
+```{r, fig.cap="Error distributions for individual species estimated with kernal density. Blue vertical lines indicate 0 (no error). Brown vertical lines indicate mean species errors."}
+error %>% 
+  group_by(spp) %>% 
+  mutate(err_mean = mean(err)) %>% 
+  ungroup() %>% 
+  ggplot(aes(err)) +
+  geom_density(fill = "dark gray") +
+  xlab("error (%change/yr)") +
+  theme(text = element_text(family = "Perpetua"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_vline(xintercept = 0, col = "#386cb0", size = 1) +
+  geom_vline(aes(xintercept = err_mean), col = "#bf5b17", size = 1) +
+  facet_wrap(~ spp)
+```
+
+\newpage
+
+```{r, results='asis'}
+spp_RMSE <- error %>% 
+  group_by(spp) %>% 
+  summarize(n = n(), nRMSE = 0) %>% 
+  arrange(desc(n))
+
+for (i in 1:length(spp_RMSE$spp)){
+  x <- filter(error, spp == spp_RMSE$spp[[i]])
+  spp_RMSE[i, 3] <- RMSE(x$y, x$y_hat)/mean(x$y)
+}
+
+kable(spp_RMSE, booktabs = T, linesep = "", digits = 4,
+      caption = "Sample sizes and normalized root mean square errors by species") %>% 
+  kable_styling(latex_options = "hold_position")
+```
+
+\vspace{100pt}
+\newpage
+
+```{r, fig.height=2.5}
+
+for(i in 1:16){
+  print(autoplot(cr_pdp_s[[i]], 
+                 ylab = "annual crown ratio change (%)", 
+                 main = paste("PDP for", 
+                              names(cr_growth_model_full$trainingData)[[i]]),
+                 col = "#386cb0",
+                 size = 1.2) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(cr_ice[[i]], 
+                 ylab = "annual crown ratio change (%)", 
+                 main = paste("ICE plot for", 
+                              names(cr_growth_model_full$trainingData)[[i]]), 
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(cr_ice_c[[i]],
+                 ylab = "crown ratio change centered", 
+                 main = paste("Centered ICE plot for", 
+                              names(cr_growth_model_full$trainingData)[[i]]),
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+}
+```
+
+\newpage
+
+#Survival Submodel
+
+```{r, results='asis'}
+y <- mort_model_full$trainingData$.outcome
+y_hat <- predict(mort_model_full, newdata = mort_model_full$trainingData[,-18])
+y_hat_prob <- predict(mort_model_full, 
+                      newdata = mort_model_full$trainingData[,-18],
+                      type = "prob")
+
+cm <- confusionMatrix(data = y_hat, reference = y, positive = "lived") # Calculate CM
+
+cm$overall %>% 
+  kable(booktabs = T, linesep = "", digits = 3,
+        caption = "Overall accuracy estimates, calculated on out of bag data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, results='asis'}
+cm$byClass %>% 
+  kable(booktabs = T, linesep = "", digits = 3,
+        caption = "Accuracy estimates by class, calculated on out of bag data") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r, results='asis'}
+cm$table %>% 
+  kable(booktabs = T, linesep = "",
+        caption = "Confusion matrix. Columns are actual, observed outcomes; rows are predicted outcomes.") %>% 
+  kable_styling(position = "center",
+                latex_options = "hold_position")
+```
+
+```{r}
+result.roc <- roc(y, y_hat_prob$lived) # Calculate ROC curve
+
+plot(result.roc, print.auc = T) #plot ROC with AUC on it
+```
+
+\vspace{100pt}
+\newpage
+
+```{r, fig.height=2.5}
+
+for(i in 1:17){
+  print(autoplot(mort_pdp_s[[i]], 
+                 ylab = "probability of dying", 
+                 main = paste("PDP for", 
+                              names(mort_model_full$trainingData)[[i]]),
+                 col = "#386cb0",
+                 size = 1.2) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(mort_ice[[i]], 
+                 ylab = "probability of dying", 
+                 main = paste("ICE plot for", 
+                              names(mort_model_full$trainingData)[[i]]), 
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  print(autoplot(mort_ice_c[[i]],
+                 ylab = "probability of dying centered", 
+                 main = paste("Centered ICE plot for", 
+                              names(mort_model_full$trainingData)[[i]]),
+                 pdp.size = 1.6, 
+                 pdp.color = "#386cb0", 
+                 alpha = .3) +
+          theme(text = element_text(family = "Perpetua"),
+                axis.text.x = element_text(angle = 45, hjust = 1)))
+}
+```

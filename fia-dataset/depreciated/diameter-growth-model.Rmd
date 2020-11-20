@@ -1,0 +1,274 @@
+---
+title: "An Emperical Diameter Growth Model for Trees in the Northern Forest"
+author: "Neal Maker"
+date: "July 30, 2019"
+output: pdf_document
+bibliography: ["C:/Users/Neal/bibtex-db/citations.bib"]
+---
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, warning = FALSE, message = FALSE)
+```
+
+#Introduction
+
+The principal goal of this analysis is develop a diameter growth model for trees in the US Northern Forest region, which can be incorporated into Pekin Branch Forestry's^[www.pekinbranch.com] forest inventory, analysis and planning toolbox. The model will be used to predict the growth of existing forest stands to aid in management planning. 
+
+An individual tree model will be most useful. Many stands in the Northern Forest have been affected by multiple disturbances of varying intensity (opportunistic logging chief among them) and are now irregularly structured and compositionally diverse [@teck_individual_1991]. A management scheme focused on developing quality growing stock as quickly as possible must be responsive to these variations; and individual tree models do a better job accounting for such heterogeneity than stand-level models, which are better suited to even-aged, monospecific stands [@peng_growth_2000]. 
+
+Also, Pekin Branch Forestry does not currently record coordinates for inventoried trees, so a distance-independent growth model must be developed (one which does not explicitly account for the spatial relationships between individual trees). 
+
+We are concurrently working to develop a distance-dependent model to use with scenario modeling and which could eventually be incorporated into a spatially explicit inventory protocol. It will be built on Sortie-ND^[http://www.sortie-nd.org] [@pacala_forest_1996; @canham_neighborhood_2004]; a stochasic, process-based forest simulator that is well suited to modeling novel scenarios and that can return a range of expected outcomes for any given scenario. Unlike the deterministic model developed here, the Sortie-based model will allow users to estimate the likelihoods of different outcomes.  
+
+In contrast, this distance-independent model will be completely emperical, and will not be applicable to scenarios that are outside the range of its training data. For example, it will be poorly suited to modeling growth under novel forest management systems, or to modeling growth in a changing climate [@peng_growth_2000; @cuddington_process-based_2013]. It can be made much more computationally efficient though, and will be well suited to routine growth modeling in existing forests (which are generally inside the range of the training data) over relatively small timescales.
+
+A number of distance-independent, individual tree diameter growth models have been developed for use in forest management planning in the Northeast [@teck_individual_1991; @solomon_fiber_1995; @lessard_diameter_2000; @westfall_predicting_2006; @kiernan_individual-tree_2008; @weiskittel_development_2016; @weiskittel_correction_2019], but none are ideal for our purposes. 
+
+[Teck and Hilt's diameter increment model (based on data from 14 northeastern states) was incorporated into NE-Twigs and into FVS, but Weiskittel made new increment model for FVS' Adk variant (new in 2016). Teck and Hilt's used a Chapman Richards (sigmoidal) growth function to calculate species specific potential growth (based on DBH & SI) then modified it downward (based on BAL) using a negative exponential function to estimate the true growth rate. Weiskittel used nonlinear mixed effects model (based on DBH, BAL & CSI; crown ratio, bole ht, & % BA in hardwoods  were found to be unimportant and weren't included). Random effect allowed several coefficients to vary by spp so he didn't need to make separate models for individual spp (would have been less accurate b/c small N). Westfall's is also a mixed effects model, but uses FIA data from entire northeast (useful to see how he did it). The only measure of cometition he kept was stand BA. He had random effects to allow crown ratio and basal area for within plot condition coefficients to vary by spp group]
+
+(What do I want that's different? Is this really about modelling interactions?)
+
+@stage_inventory_1998 discuss the problems applying a growth model when sampling variances differ between training data and application data. Worth getting my head around.
+
+#Data
+
+FIA data was retrieved for select states using the laselva tool developed for R by @chamberlain_laselva:_2018.
+
+```{r, import_fia}
+
+library(laselva) # for fetching FIA data; https://github.com/ropenscilabs/laselva
+library(tidyverse)
+
+# Define States & counties (FIPS codes) in Northern Forest region --------
+
+states <- c("VT", "NH", "NY", "ME")
+
+vt_counties <- c(11, 19, 9, 7, 15, 5, 23, 1, 17, 13)
+nh_counties <- c(7, 9, 3)
+ny_counties <- c(75, 65, 49, 45, 89, 43, 35, 41, 33, 31, 19, 113)
+me_counties <- c(17, 7, 25, 1, 11, 27, 9, 29, 19, 21, 3)
+
+
+# Fetch FIA tree, growth, plot, & condition data for Northern Forest states 
+# (this may take a few minutes)
+
+nf_trees <- fia_fetch(state = states)
+nf_growth <- fia_fetch(states, "TREE_GRM_COMPONENT")
+nf_plots <- fia_fetch(states, "PLOT")
+nf_conds <- fia_fetch(states, "COND")
+
+
+# Filter nf_trees to keep only data from Northern Forest counties in each state 
+
+nf_trees$VT_tree <- nf_trees$VT_tree %>% 
+  filter(COUNTYCD %in% vt_counties)
+nf_trees$NH_tree <- nf_trees$NH_tree %>%
+  filter(COUNTYCD %in% nh_counties)
+nf_trees$NY_tree <- nf_trees$NY_tree %>%
+  filter(COUNTYCD %in% ny_counties)
+nf_trees$ME_tree <- nf_trees$ME_tree %>%
+  filter(COUNTYCD %in% me_counties)
+
+
+# For each FIA table, combine states' data, filter, format and select vectors
+# that might be useful
+
+nf_trees <- rbind(nf_trees$VT_tree, 
+                  nf_trees$NH_tree, 
+                  nf_trees$NY_tree, 
+                  nf_trees$ME_tree) %>%
+  # keep live, non-cull, non-seedling trees:
+  filter(DIAHTCD == 1, 
+         TREECLCD == 2, 
+         STATUSCD == 1) %>% 
+  mutate(TRE_CN = CN,
+         # create unique county code from state and county codes:
+         COUNTY = paste(factor(STATECD), factor(COUNTYCD), sep = "_"),
+         SPCD = factor(SPCD),
+         COUNTY = factor(COUNTY)) %>%
+  select(TRE_CN, PLT_CN, COUNTY, SPCD, HT, CCLCD, TREEGRCD, CULL, UNCRCD, 
+         CR, CDENCD, CDIEBKCD, TRANSCD, TREECLCD_NERS, DAMLOC1, DAMLOC2, 
+         DAMTYP1, DAMTYP2, DAMSEV1, DAMSEV2, STATECD, INVYR, DIA)
+
+nf_growth <- rbind(nf_growth$VT_TREE_GRM_COMPONENT, 
+                   nf_growth$NH_TREE_GRM_COMPONENT, 
+                   nf_growth$NY_TREE_GRM_COMPONENT, 
+                   nf_growth$ME_TREE_GRM_COMPONENT) %>%
+  select(TRE_CN, DIA_BEGIN, DIA_MIDPT, DIA_END, ANN_DIA_GROWTH) 
+
+nf_plots <- rbind(nf_plots$VT_PLOT, 
+                  nf_plots$NH_PLOT, 
+                  nf_plots$NY_PLOT, 
+                  nf_plots$ME_PLOT) %>%
+  mutate(PLT_CN = CN) %>%
+  select(PLT_CN, LAT, LON)
+
+nf_conds <- rbind(nf_conds$VT_COND,
+                  nf_conds$NH_COND,
+                  nf_conds$NY_COND,
+                  nf_conds$ME_COND) %>%
+  select(FORTYPCD, SITECLCD, SLOPE, ASPECT, PHYSCLCD, GSSTKCD,
+         BALIVE, LIVE_CANOPY_CVR_PCT, NBR_LIVE_STEMS, PLT_CN)
+
+
+# Join FIA tables -------------------------------------------------------
+
+nf_fia <- inner_join(nf_trees, nf_growth, by = "TRE_CN") 
+
+nf_fia <- right_join(nf_plots, nf_fia, by = "PLT_CN")
+                     
+nf_fia <- right_join(nf_conds, nf_fia, by = "PLT_CN")
+```
+
+```{r, all_fia_map, fig.cap="All FIA observations in study area", fig.dim=c(4,2.5)}
+library(maps)
+
+nf_fia %>%
+  ggplot(aes(LON, LAT)) +
+  geom_polygon(data = map_data("state"), 
+               aes(x = long, y = lat, group = group),
+               fill = NA, col = "dark gray") +
+  geom_point(size = .05) +
+  coord_fixed(xlim = c(-77, -67), ylim = c(42.4, 47.6), ratio = 1.3) +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank())
+```
+
+```{r, filter_fia}
+# filter out observations w/o diameter growth measurements (algorithm outcome),
+# remove database keys, bring outcome to front, & reformat some
+
+nf_fia <- nf_fia %>% filter(!is.na(ANN_DIA_GROWTH)) %>%
+  select(-(TRE_CN)) %>% 
+  select(ANN_DIA_GROWTH, everything())
+
+remove(nf_conds, nf_growth, nf_plots, nf_trees, states, 
+       vt_counties, nh_counties, ny_counties, me_counties)
+```
+
+```{r, remeas_fia_map, fig.cap="Observations with growth rates", fig.dim=c(4,2.5)}
+
+nf_fia %>%
+  ggplot(aes(LON, LAT)) +
+  geom_polygon(data = map_data("state"), 
+               aes(x = long, y = lat, group = group),
+               fill = NA, col = "dark gray") +
+  geom_point(size = .05) +
+  coord_fixed(xlim = c(-77, -67), ylim = c(42.4, 47.6), ratio = 1.3) +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank())
+```
+
+```{r, eda_fia, eval=FALSE}
+# Examine vectors ---------------------------------------------------------
+
+str(nf_fia)
+
+summary(nf_fia)
+
+nf_fia <- nf_fia %>%
+  arrange(ANN_DIA_GROWTH)
+
+View(head(nf_fia))
+
+View(tail(nf_fia))
+
+levels(nf_fia$COUNTY)
+# 10 VT counties, 3 NH, 12 NY, 11 ME
+
+# Look for plots w/o condition data ---------------------------------------
+
+View(nf_fia %>% 
+  filter(is.na(FORTYPCD)) %>%
+  group_by(PLT_CN) %>%
+  summarize(nasite = sum(is.na(SITECLCD))/n(),
+            naslope = sum(is.na(SLOPE))/n(),
+            naaspect = sum(is.na(ASPECT))/n(),
+            naphys = sum(is.na(PHYSCLCD))/n(),
+            nastock = sum(is.na(GSSTKCD))/n(),
+            naba = sum(is.na(BALIVE))/n()))
+
+View(nf_fia %>% 
+  filter(!is.na(FORTYPCD)) %>%
+  group_by(PLT_CN) %>%
+  summarize(nasite = sum(is.na(SITECLCD))/n(),
+            naslope = sum(is.na(SLOPE))/n(),
+            naaspect = sum(is.na(ASPECT))/n(),
+            naphys = sum(is.na(PHYSCLCD))/n(),
+            nastock = sum(is.na(GSSTKCD))/n(),
+            naba = sum(is.na(BALIVE))/n()))
+
+View(unique((nf_fia %>% filter(is.na(FORTYPCD)))$COUNTY))
+# Plots w/o condition data exist in all states
+```
+
+```{r, fix_fia}
+
+bad_plots <- unique((filter(nf_fia, is.na(FORTYPCD)))$PLT_CN) #w/o condition data
+  
+nf_fia <- nf_fia  %>%
+  # reformat factors:
+  mutate(FORTYPCD = factor(FORTYPCD),
+         PHYSCLCD = factor(PHYSCLCD)) %>%
+  # remove observations missing key predictors:
+  filter(!is.na(DIA_MIDPT) & !is.na(CR),
+         !(PLT_CN %in% bad_plots)) %>%
+  # remove empty & almost empty vectors:
+  select(ANN_DIA_GROWTH:BALIVE, LAT:SPCD, CCLCD, CR, DIA_MIDPT)
+```
+
+```{r, final_fia_map, fig.cap="Observations with growth rates & crown ratios", fig.dim=c(4,2.5)}
+
+nf_fia %>%
+  ggplot(aes(LON, LAT)) +
+  geom_polygon(data = map_data("state"), 
+               aes(x = long, y = lat, group = group),
+               fill = NA, col = "dark gray") +
+  geom_point(size = .05) +
+  coord_fixed(xlim = c(-77, -67), ylim = c(42.4, 47.6), ratio = 1.3) +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank())
+
+```
+
+#Analysis
+
+a methods/analysis section that explains the process and techniques used, such as data cleaning, data exploration and visualization, any insights gained, and your modeling approach;
+
+#Results
+
+a results section; and
+
+#Conclusions
+
+a conclusion section
+@bragg_optimal_2005 provides optimal tree increments using potential relative increment (PRI) methodology for use in NCI models. I can compare these to my optimal increments. Note that @weiskittel_development_2016 show species-specific RMSEs for their diameter increment model ranging from 0.1108 cm (for white cedar; 0.0436 in) to 0.2218 cm (for red oak; 0.0873 in). My overall RMSE is an improvement, but still pretty poor (similar to average growth rate). 
+
+Process:
+Y is dbh growth (MAI); Xs are live crown ratio, dbh, site productivity class, etc.
+
+Set aside test set - size based on size of total dataset (10-20% is normal)
+
+Use k-fold cross validation on training set to paramterize
+
+fit algorithm to whole training set using parameters from above to estimate acuracy against test set
+
+Combine test and training sets and do a final fitting on the entire dataset for use
+
+```{r train, eval=FALSE}
+caret::train(x, y, method = "rf") ##use this on the whole training set & it does k-fold cross validation automatically
+```
+
+proabably few enough predictors that knn could work well without suffering the curse of dimensionality. A random forest could also work well. Too many predictors for generative models (like naive bayes and qda) and we don't know much about the predictors population distributions (probably can't assume normality).
+
+Random forest is probably more computationally efficient than knn (good for PBF). Knn is probably more accurate. The relative importance of different predictors can be calculated for both RF and knn.
+
+Neural networks are computationally expensive and can't calculate relative importance (I think). Not sure about support vector machines.
+
+#References
